@@ -163,4 +163,9 @@ config SAMPLE_RUST_SELFTESTS
 
 	  If unsure, say N.
 
+config SAMPLE_RUST_HELLOWORLD
+    tristate "Print Helloworld in Rust"
+    help
+      This is a simple example of a Rust kernel module.
+
 endif # SAMPLES_RUST
