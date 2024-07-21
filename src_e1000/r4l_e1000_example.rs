@@ -141,6 +141,32 @@ impl NetDevice {
 
     }
 
+    fn e1000_free_all_tx_resources(data: &NetDevicePrvData) {
+        let mut tx_ring_guard = data.tx_ring.lock();
+        if let Some(tx_ring) = tx_ring_guard.take() {
+            for entry in tx_ring.buf.borrow_mut().iter_mut() {
+                if let Some((dma_map, skb)) = entry.take() {
+                    drop(dma_map);
+                    drop(skb);
+                }
+            }
+            drop(tx_ring);
+        }
+    }
+
+    fn e1000_free_all_rx_resources(data: &NetDevicePrvData) {
+        let mut rx_ring_guard = data.rx_ring.lock();
+        if let Some(mut rx_ring) = rx_ring_guard.take() {
+            for entry in rx_ring.buf.borrow_mut().iter_mut() {
+                if let Some((dma_map, skb)) = entry.take() {
+                    drop(dma_map);
+                    drop(skb);
+                }
+            }
+            drop(rx_ring);
+        }
+    }
+
 
 }
 
@@ -189,18 +215,25 @@ impl net::DeviceOperations for NetDevice {
         Ok(())
     }
 
-    fn stop(dev: &net::Device, data: &NetDevicePrvData) -> Result {
+    fn stop(_dev: &net::Device, _data: &NetDevicePrvData) -> Result {
         pr_info!("Rust for linux e1000 driver demo (net device stop)\n");
-        dev.netif_carrier_off();
-        dev.netif_stop_queue();
-        data.napi.disable();
+        Self::e1000_free_all_tx_resources(_data);
+        Self::e1000_free_all_rx_resources(_data);
 
-        data.e1000_hw_ops.e1000_reset_hw();
-        data._irq_handler
-            .store(core::ptr::null_mut(), core::sync::atomic::Ordering::Relaxed);
+        let irq_handler_ptr = _data._irq_handler.load(core::sync::atomic::Ordering::Relaxed);
 
-        let _ = data.tx_ring.lock_irqdisable().take();
-        let _ = data.rx_ring.lock_irqdisable().take();
+        if !irq_handler_ptr.is_null() {
+            unsafe {
+                let _irq_handler_box = Box::from_raw(irq_handler_ptr);
+            }
+            _data._irq_handler.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Relaxed);
+        }
+
+        _data.napi.disable();
+        _dev.netif_stop_queue();
+        _dev.netif_carrier_off();
+
+        _data.e1000_hw_ops.e1000_reset_hw();
         Ok(())
     }
 
@@ -303,9 +336,13 @@ impl kernel::irq::Handler for E1000InterruptHandler {
 /// the private data for the adapter
 struct E1000DrvPrvData {
     _netdev_reg: net::Registration<NetDevice>,
-    pci_dev_ptr: AtomicPtr<bindings::pci_dev>,
     bars: i32,
+    pci_dev_ptr: *mut bindings::pci_dev,
+    irq: u32,
 }
+
+unsafe impl Send for E1000DrvPrvData {}
+unsafe impl Sync for E1000DrvPrvData {}
 
 impl driver::DeviceRemoval for E1000DrvPrvData {
     fn device_remove(&self) {
@@ -364,7 +401,7 @@ impl net::NapiPoller for NapiHandler {
         1
     }
 }
-
+#[derive(Debug)]
 struct E1000Drv {}
 
 
@@ -475,29 +512,34 @@ impl pci::Driver for E1000Drv {
             E1000DrvPrvData{
                 // Must hold this registration, or the device will be removed.
                 _netdev_reg: netdev_reg,
-                pci_dev_ptr: AtomicPtr::new(unsafe { dev.ptr() }),
-                bars,
+                bars: bars,
+                pci_dev_ptr: dev.to_ptr(),
+                irq: irq,
             }
         )?)
     }
 
     fn remove(data: &Self::Data) {
         pr_info!("Rust for linux e1000 driver demo (remove)\n");
-        let mut netdev_reg = &data._netdev_reg;
-        let netdev = netdev_reg.dev_get();
-        netdev.netif_carrier_off();
-        netdev.netif_stop_queue();
-        drop(netdev);
+        let netdev_reg = &data._netdev_reg;
+        let net_dev = (*netdev_reg).dev_get();
+        let bars = data.bars;
+        let pci_dev_ptr = data.pci_dev_ptr;
+
+        unsafe {
+            bindings::pci_release_selected_regions(pci_dev_ptr, bars);
+            bindings::pci_clear_master(pci_dev_ptr);
+            bindings::pci_disable_device(pci_dev_ptr);
+        }
+
+        net_dev.netif_carrier_off();
+        net_dev.netif_stop_queue();
+
+        drop(net_dev);
         drop(netdev_reg);
-
-        let pci_dev_ptr = data.pci_dev_ptr.load(core::sync::atomic::Ordering::Relaxed);
-        let mut pci_dev = unsafe { pci::Device::from_ptr(pci_dev_ptr) };
-
-        pci_dev.release_selected_regions(data.bars);
-        pci_dev.clear_master();
-        pci_dev.disable_device();
     }
 }
+
 struct E1000KernelMod {
     _dev: Pin<Box<driver::Registration::<pci::Adapter<E1000Drv>>>>,
 }
