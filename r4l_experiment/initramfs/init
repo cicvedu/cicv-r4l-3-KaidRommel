@@ -1,0 +1,30 @@
+#!/bin/busybox sh
+
+# 挂载 /proc 和 /sys 文件系统。
+mount -t proc none /proc
+mount -t sysfs none /sys
+
+# 启动实际服务。
+
+# 启用网卡
+ip link set eth0 up
+ip addr add 10.0.2.15/24 dev eth0
+ip link set lo up
+
+# 等待网卡准备就绪
+sleep 0.5
+
+# 自动挂载NFS共享
+mount -t nfs -o nolock host_machine:/usr/rust/cicv-r4l-3-KaidRommel/r4l_experiment/driver /mnt
+
+
+# 挂载 devpts
+mount -t devpts devpts /dev/pts
+
+# 启动 telnet 服务器
+telnetd -l /bin/sh
+
+# 使用 -l 选项将新的 shell 设置为登录 shell
+# 只有登录 shell 会读取 /etc/profile
+setsid sh -c 'exec sh -l </dev/ttyS0 >/dev/ttyS0 2>&1'
+

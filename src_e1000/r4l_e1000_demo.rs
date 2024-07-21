@@ -298,6 +298,9 @@ struct E1000DrvPrvData {
 impl driver::DeviceRemoval for E1000DrvPrvData {
     fn device_remove(&self) {
         pr_info!("Rust for linux e1000 driver demo (device_remove)\n");
+
+        drop(&self._netdev_reg);
+
     }
 }
 

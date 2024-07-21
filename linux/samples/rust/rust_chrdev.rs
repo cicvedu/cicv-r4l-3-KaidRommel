@@ -19,6 +19,7 @@ module! {
 }
 
 static GLOBALMEM_BUF: Mutex<[u8;GLOBALMEM_SIZE]> = unsafe {
+    // 创建一个长度为GLOBALMEM_SIZE（4096字节）的字节数据类型为u8数组，每个元素都被初始化为0
     Mutex::new([0u8;GLOBALMEM_SIZE])
 };
 
@@ -39,12 +40,23 @@ impl file::Operations for RustFile {
         )
     }
 
-    fn write(_this: &Self,_file: &file::File,_reader: &mut impl kernel::io_buffer::IoBufferReader,_offset:u64,) -> Result<usize> {
-        Err(EPERM)
+    fn write(this: &Self,_file: &file::File,reader: &mut impl kernel::io_buffer::IoBufferReader,offset:u64,) -> Result<usize> {
+        let offset = offset.try_into()?;
+        let mut vec = this.inner.lock();
+        // 计算要写入的数据长度，取 reader 中数据的长度和 vec 中从 offset 开始的剩余空间的最小值
+        let len = core::cmp::min(reader.len(), vec.len().saturating_sub(offset));
+
+        // 从 reader 中读取数据，并写入到 vec 中从 offset 开始的位置，长度为 len。如果读取失败，函数会返回错误
+        reader.read_slice(&mut vec[offset..][..len])?;
+        Ok(len)
     }
 
-    fn read(_this: &Self,_file: &file::File,_writer: &mut impl kernel::io_buffer::IoBufferWriter,_offset:u64,) -> Result<usize> {
-        Err(EPERM)
+    fn read(this: &Self,_file: &file::File,writer: &mut impl kernel::io_buffer::IoBufferWriter,offset:u64,) -> Result<usize> {
+        let offset = offset.try_into()?;
+        let mut vec = this.inner.lock();
+        let len = core::cmp::min(writer.len(), vec.len().saturating_sub(offset));
+        writer.write_slice(&mut vec[offset..][..len])?;
+        Ok(len)
     }
 }
 
